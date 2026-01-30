@@ -120,15 +120,8 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    entrypoint: >
-      /bin/bash -c " airflow db init && airflow users create
-        --username ${AIRFLOW_ADMIN_USER:-admin}
-        --firstname Admin
-        --lastname User
-        --role Admin
-        --email admin@example.com
-        --password ${AIRFLOW_ADMIN_PASSWORD:-admin}
-      "
+    command: >
+      bash -c "airflow db migrate && airflow users create --username ${AIRFLOW_ADMIN_USER:-admin} --firstname Admin --lastname User --role Admin --email admin@example.com --password ${AIRFLOW_ADMIN_PASSWORD:-admin}"
 
   airflow-webserver:
     image: apache/airflow:2.9.3
