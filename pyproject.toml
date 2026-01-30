@@ -1,0 +1,15 @@
+﻿[project]
+name = "mlops-batch-pipeline"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.black]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
