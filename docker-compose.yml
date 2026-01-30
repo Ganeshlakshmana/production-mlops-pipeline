@@ -1,0 +1,163 @@
+services:
+  # -----------------------
+  # App DB (your pipeline data)
+  # -----------------------
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${APP_DB_USER:-mlops}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-mlops}
+      POSTGRES_DB: ${APP_DB_NAME:-mlops}
+    ports:
+      - "${APP_DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${APP_DB_USER:-mlops} -d ${APP_DB_NAME:-mlops}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # -----------------------
+  # Object storage (S3 OSS)
+  # -----------------------
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minio12345}
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Console UI
+    volumes:
+      - miniodata:/data
+
+  # Create buckets (idempotent)
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c " mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minio} ${MINIO_SECRET_KEY:-minio12345}; mc mb -p local/${MINIO_BUCKET_MLFLOW:-mlflow} || true; mc mb -p local/${MINIO_BUCKET_DATASETS:-datasets} || true; mc mb -p local/${MINIO_BUCKET_REPORTS:-reports} || true; echo 'MinIO buckets ready'; "
+
+  # -----------------------
+  # MLflow (tracking + registry)
+  # -----------------------
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.13.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minio}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minio12345}
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql+psycopg2://${APP_DB_USER:-mlops}:${APP_DB_PASSWORD:-mlops}@postgres:5432/${APP_DB_NAME:-mlops} --default-artifact-root s3://${MINIO_BUCKET_MLFLOW:-mlflow}/
+    ports:
+      - "5000:5000"
+
+  # -----------------------
+  # Streaming broker (Kafka-compatible)
+  # -----------------------
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092,PLAINTEXT_HOST://localhost:9092
+    ports:
+      - "9092:9092"
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    depends_on:
+      - redpanda
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"
+
+  # -----------------------
+  # Airflow metadata DB (separate)
+  # -----------------------
+  airflow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U airflow -d airflow" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  airflow-init:
+    image: apache/airflow:2.9.3
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    entrypoint: >
+      /bin/bash -c " airflow db init && airflow users create
+        --username ${AIRFLOW_ADMIN_USER:-admin}
+        --firstname Admin
+        --lastname User
+        --role Admin
+        --email admin@example.com
+        --password ${AIRFLOW_ADMIN_PASSWORD:-admin}
+      "
+
+  airflow-webserver:
+    image: apache/airflow:2.9.3
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    ports:
+      - "8088:8080"
+    command: airflow webserver
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.3
+    depends_on:
+      - airflow-webserver
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    command: airflow scheduler
+
+volumes:
+  pgdata:
+  miniodata:
+  airflow_pgdata:
