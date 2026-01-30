@@ -46,20 +46,22 @@ services:
   # MLflow (tracking + registry)
   # -----------------------
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.13.1
+    image: python:3.11-slim
     depends_on:
       postgres:
         condition: service_healthy
       minio:
         condition: service_started
+      minio-init:
+        condition: service_started
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minio}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minio12345}
-    command: >
-      mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql+psycopg2://${APP_DB_USER:-mlops}:${APP_DB_PASSWORD:-mlops}@postgres:5432/${APP_DB_NAME:-mlops} --default-artifact-root s3://${MINIO_BUCKET_MLFLOW:-mlflow}/
     ports:
       - "5000:5000"
+    command: >
+      /bin/sh -c " pip install --no-cache-dir mlflow==2.13.1 psycopg2-binary boto3 && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql+psycopg2://${APP_DB_USER:-mlops}:${APP_DB_PASSWORD:-mlops}@postgres:5432/${APP_DB_NAME:-mlops} --default-artifact-root s3://${MINIO_BUCKET_MLFLOW:-mlflow}/ "
 
   # -----------------------
   # Streaming broker (Kafka-compatible)
